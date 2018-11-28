@@ -38,7 +38,7 @@
 PsychError PsychCocoaCreateWindow(PsychWindowRecordType *windowRecord, int windowLevel, void** outWindow)
 {
     char windowTitle[100];
-    NSWindow *cocoaWindow;
+    __block NSWindow *cocoaWindow = NULL;
     PsychRectType screenRect;
     int screenHeight;
 
@@ -76,7 +76,16 @@ PsychError PsychCocoaCreateWindow(PsychWindowRecordType *windowRecord, int windo
         windowStyle = NSBorderlessWindowMask;
     }
 
-    cocoaWindow = [[NSWindow alloc] initWithContentRect:windowRect styleMask:windowStyle backing:NSBackingStoreBuffered defer:YES];
+    if ([NSThread isMainThread])
+        printf("On MAIN THREAD\n");
+    else
+        printf("On other Thread\n");
+
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        cocoaWindow = [[NSWindow alloc] initWithContentRect:windowRect styleMask:windowStyle    backing:NSBackingStoreBuffered defer:YES];
+    });
+
+    printf("Back from dispatch_sync()\n");
     if (cocoaWindow == nil) {
         printf("PTB-ERROR:PsychCocoaCreateWindow(): Could not create Cocoa-Window!\n");
         // Return failure:
@@ -164,17 +173,19 @@ void PsychCocoaGetWindowBounds(void* window, PsychRectType globalBounds, PsychRe
     // Allocate auto release pool:
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
-    // Query and translate content rect of final window to a PTB rect:
-    NSRect clientRect = [cocoaWindow contentRectForFrameRect:[cocoaWindow frame]];
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        // Query and translate content rect of final window to a PTB rect:
+        NSRect clientRect = [cocoaWindow contentRectForFrameRect:[cocoaWindow frame]];
 
-    globalBounds[kPsychLeft]   = clientRect.origin.x;
-    globalBounds[kPsychRight]  = clientRect.origin.x + clientRect.size.width;
-    globalBounds[kPsychTop]    = screenHeight - (clientRect.origin.y + clientRect.size.height);
-    globalBounds[kPsychBottom] = globalBounds[kPsychTop] + clientRect.size.height;
-    
-    // Compute true size - now in pixels, not points - of window backbuffer as windows rect:
-    NSSize backSize = [[cocoaWindow contentView] convertSizeToBacking: clientRect.size];
-    PsychMakeRect(windowpixelRect, 0, 0, backSize.width, backSize.height);
+        globalBounds[kPsychLeft]   = clientRect.origin.x;
+        globalBounds[kPsychRight]  = clientRect.origin.x + clientRect.size.width;
+        globalBounds[kPsychTop]    = screenHeight - (clientRect.origin.y + clientRect.size.height);
+        globalBounds[kPsychBottom] = globalBounds[kPsychTop] + clientRect.size.height;
+
+        // Compute true size - now in pixels, not points - of window backbuffer as windows rect:
+        NSSize backSize = [[cocoaWindow contentView] convertSizeToBacking: clientRect.size];
+        PsychMakeRect(windowpixelRect, 0, 0, backSize.width, backSize.height);
+    });
 
     // Drain the pool:
     [pool drain];
@@ -263,42 +274,43 @@ hwinpidout:
 // PsychCocoaSetUserFocusWindow is a replacement for Carbon's SetUserFocusWindow().
 void PsychCocoaSetUserFocusWindow(void* window)
 {
-    NSWindow* focusWindow = (NSWindow*) window;
-
     // Allocate auto release pool:
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        NSWindow* focusWindow = (NSWindow*) window;
 
-    // Special flag: Try to restore main apps focus:
-    if (focusWindow == (NSWindow*) 0x1) {
-        focusWindow = [[NSApplication sharedApplication] mainWindow];
-    }
-
-    // Direct keyboard input focus to window 'inWindow':
-    if (focusWindow) [focusWindow makeKeyAndOrderFront: nil];
-
-    // Special handle NULL provided? Try to regain keyboard focus rambo-style for
-    // our hosting window for octave / matlab -nojvm in terminal window:
-    if (focusWindow == NULL) {
-        // This works to give keyboard focus to a process other than our (Matlab/Octave) runtime, if
-        // the process id (pid_t) of the process is known and valid for a GUI app. E.g., passing in
-        // the pid of the XServer process X11.app or the Konsole.app will restore the xterm'inal windows
-        // or Terminal windows keyboard focus after a CGDisplayRelease() call, and thereby to the
-        // octave / matlab -nojvm process which is hosted by those windows.
-        //
-        // Problem: Finding the pid requires iterating and filtering over all windows and name matching for
-        // all possible candidates, and a shielding window from CGDisplayCapture() will still prevent keyboard
-        // input, even if the window has input focus...
-        pid_t pid = GetHostingWindowsPID();
-
-        // Also, the required NSRunningApplication class is unsupported on 64-Bit OSX 10.5, so we need to
-        // dynamically bind it and no-op if it is unsupported:
-        Class nsRunningAppClass = NSClassFromString(@"NSRunningApplication");
-
-        if (pid && (nsRunningAppClass != NULL)) {
-            NSRunningApplication* motherapp = [nsRunningAppClass runningApplicationWithProcessIdentifier: pid];    
-            [motherapp activateWithOptions: NSApplicationActivateIgnoringOtherApps];
+        // Special flag: Try to restore main apps focus:
+        if (focusWindow == (NSWindow*) 0x1) {
+            focusWindow = [[NSApplication sharedApplication] mainWindow];
         }
-    }
+
+        // Direct keyboard input focus to window 'inWindow':
+        if (focusWindow) [focusWindow makeKeyAndOrderFront: nil];
+
+        // Special handle NULL provided? Try to regain keyboard focus rambo-style for
+        // our hosting window for octave / matlab -nojvm in terminal window:
+        if (focusWindow == NULL) {
+            // This works to give keyboard focus to a process other than our (Matlab/Octave) runtime, if
+            // the process id (pid_t) of the process is known and valid for a GUI app. E.g., passing in
+            // the pid of the XServer process X11.app or the Konsole.app will restore the xterm'inal windows
+            // or Terminal windows keyboard focus after a CGDisplayRelease() call, and thereby to the
+            // octave / matlab -nojvm process which is hosted by those windows.
+            //
+            // Problem: Finding the pid requires iterating and filtering over all windows and name matching for
+            // all possible candidates, and a shielding window from CGDisplayCapture() will still prevent keyboard
+            // input, even if the window has input focus...
+            pid_t pid = GetHostingWindowsPID();
+
+            // Also, the required NSRunningApplication class is unsupported on 64-Bit OSX 10.5, so we need to
+            // dynamically bind it and no-op if it is unsupported:
+            Class nsRunningAppClass = NSClassFromString(@"NSRunningApplication");
+
+            if (pid && (nsRunningAppClass != NULL)) {
+                NSRunningApplication* motherapp = [nsRunningAppClass runningApplicationWithProcessIdentifier: pid];
+                [motherapp activateWithOptions: NSApplicationActivateIgnoringOtherApps];
+            }
+        }
+    });
 
     // Drain the pool:
     [pool drain];
@@ -307,7 +319,7 @@ void PsychCocoaSetUserFocusWindow(void* window)
 // PsychCocoaGetUserFocusWindow is a replacement for Carbon's GetUserFocusWindow() function.
 void* PsychCocoaGetUserFocusWindow(void)
 {
-    NSWindow* focusWindow = NULL;
+    __block NSWindow* focusWindow = NULL;
 
     // Allocate auto release pool:
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
@@ -315,7 +327,7 @@ void* PsychCocoaGetUserFocusWindow(void)
     // Retrieve pointer to current keyWindow - the window that receives
     // key events aka the window with keyboard input focus. Or 'nil' if
     // no such window exists:
-    focusWindow = [[NSApplication sharedApplication] keyWindow];
+    dispatch_sync(dispatch_get_main_queue(), ^{focusWindow = [[NSApplication sharedApplication] keyWindow];});
 
     // Drain the pool:
     [pool drain];
@@ -330,26 +342,28 @@ void PsychCocoaDisposeWindow(PsychWindowRecordType *windowRecord)
     // Allocate auto release pool:
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
-    // Manually detach NSOpenGLContext from drawable. This seems to help to reduce
-    // the frequency of those joyful "frozen screen hangs until mouse click" events
-    // that OSX 10.9 brought to our happy little world:
-    if (windowRecord->targetSpecific.nsmasterContext) [((NSOpenGLContext*) windowRecord->targetSpecific.nsmasterContext) clearDrawable];
-    if (windowRecord->targetSpecific.nsswapContext) [((NSOpenGLContext*) windowRecord->targetSpecific.nsswapContext) clearDrawable];
-    if (windowRecord->targetSpecific.nsuserContext) [((NSOpenGLContext*) windowRecord->targetSpecific.nsuserContext) clearDrawable];
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        // Manually detach NSOpenGLContext from drawable. This seems to help to reduce
+        // the frequency of those joyful "frozen screen hangs until mouse click" events
+        // that OSX 10.9 brought to our happy little world:
+        if (windowRecord->targetSpecific.nsmasterContext) [((NSOpenGLContext*) windowRecord->targetSpecific.nsmasterContext) clearDrawable];
+        if (windowRecord->targetSpecific.nsswapContext) [((NSOpenGLContext*) windowRecord->targetSpecific.nsswapContext) clearDrawable];
+        if (windowRecord->targetSpecific.nsuserContext) [((NSOpenGLContext*) windowRecord->targetSpecific.nsuserContext) clearDrawable];
 
-    // Release NSOpenGLContext's - this will also release the wrapped
-    // CGLContext's and finally really destroy them:
-    if (windowRecord->targetSpecific.nsmasterContext) [((NSOpenGLContext*) windowRecord->targetSpecific.nsmasterContext) release];
-    if (windowRecord->targetSpecific.nsswapContext) [((NSOpenGLContext*) windowRecord->targetSpecific.nsswapContext) release];
-    if (windowRecord->targetSpecific.nsuserContext) [((NSOpenGLContext*) windowRecord->targetSpecific.nsuserContext) release];
+        // Release NSOpenGLContext's - this will also release the wrapped
+        // CGLContext's and finally really destroy them:
+        if (windowRecord->targetSpecific.nsmasterContext) [((NSOpenGLContext*) windowRecord->targetSpecific.nsmasterContext) release];
+        if (windowRecord->targetSpecific.nsswapContext) [((NSOpenGLContext*) windowRecord->targetSpecific.nsswapContext) release];
+        if (windowRecord->targetSpecific.nsuserContext) [((NSOpenGLContext*) windowRecord->targetSpecific.nsuserContext) release];
 
-    // Zero-Out the contexts after release:
-    windowRecord->targetSpecific.nsmasterContext = NULL;
-    windowRecord->targetSpecific.nsswapContext = NULL;
-    windowRecord->targetSpecific.nsuserContext = NULL;
+        // Zero-Out the contexts after release:
+        windowRecord->targetSpecific.nsmasterContext = NULL;
+        windowRecord->targetSpecific.nsswapContext = NULL;
+        windowRecord->targetSpecific.nsuserContext = NULL;
 
-    // Close window. This will also release the associated contentView:
-    [cocoaWindow close];
+        // Close window. This will also release the associated contentView:
+        [cocoaWindow close];
+    });
 
     // Drain the pool:
     [pool drain];
@@ -363,10 +377,10 @@ void PsychCocoaShowWindow(void* window)
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
     // Bring to front:
-    [cocoaWindow orderFrontRegardless];
+    dispatch_sync(dispatch_get_main_queue(), ^{[cocoaWindow orderFrontRegardless];});
 
     // Show window:
-    [cocoaWindow display];
+    dispatch_sync(dispatch_get_main_queue(), ^{[cocoaWindow display];});
 
     // Drain the pool:
     [pool drain];
@@ -377,9 +391,6 @@ psych_bool PsychCocoaSetupAndAssignOpenGLContextsFromCGLContexts(void* window, P
     NSWindow* cocoaWindow = (NSWindow*) window;
 
     GLint opaque = 0;
-    NSOpenGLContext *masterContext = NULL;
-    NSOpenGLContext *gluserContext = NULL;
-    NSOpenGLContext *glswapContext = NULL;
 
     // Allocate auto release pool:
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
@@ -387,38 +398,44 @@ psych_bool PsychCocoaSetupAndAssignOpenGLContextsFromCGLContexts(void* window, P
     // Enable opacity for OpenGL contexts if underlying window is opaque:
     if ([cocoaWindow isOpaque] == true) opaque = 1;
 
-    // Build NSOpenGLContexts as wrappers around existing CGLContexts already
-    // created in calling routine:
-    masterContext = [[NSOpenGLContext alloc] initWithCGLContextObj: windowRecord->targetSpecific.contextObject];
-    [masterContext setValues:&opaque forParameter:NSOpenGLCPSurfaceOpacity];
-    [masterContext setView:[cocoaWindow contentView]];
-    [masterContext makeCurrentContext];
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        NSOpenGLContext *masterContext = NULL;
+        NSOpenGLContext *gluserContext = NULL;
+        NSOpenGLContext *glswapContext = NULL;
 
-    // Ditto for potential gl userspace rendering context:
-    if (windowRecord->targetSpecific.glusercontextObject) {
-        gluserContext = [[NSOpenGLContext alloc] initWithCGLContextObj: windowRecord->targetSpecific.glusercontextObject];
-        [gluserContext setValues:&opaque forParameter:NSOpenGLCPSurfaceOpacity];
-        [gluserContext setView:[cocoaWindow contentView]];
-    }
+        // Build NSOpenGLContexts as wrappers around existing CGLContexts already
+        // created in calling routine:
+        masterContext = [[NSOpenGLContext alloc] initWithCGLContextObj: windowRecord->targetSpecific.contextObject];
+        [masterContext setValues:&opaque forParameter:NSOpenGLCPSurfaceOpacity];
+        [masterContext setView:[cocoaWindow contentView]];
+        [masterContext makeCurrentContext];
 
-    // Ditto for potential glswapcontext for async flips and frame sequential stereo:
-    if (windowRecord->targetSpecific.glswapcontextObject) {
-        glswapContext = [[NSOpenGLContext alloc] initWithCGLContextObj: windowRecord->targetSpecific.glswapcontextObject];
-        [glswapContext setValues:&opaque forParameter:NSOpenGLCPSurfaceOpacity];
-        [glswapContext setView:[cocoaWindow contentView]];
-    }
+        // Ditto for potential gl userspace rendering context:
+        if (windowRecord->targetSpecific.glusercontextObject) {
+            gluserContext = [[NSOpenGLContext alloc] initWithCGLContextObj: windowRecord->targetSpecific.glusercontextObject];
+            [gluserContext setValues:&opaque forParameter:NSOpenGLCPSurfaceOpacity];
+            [gluserContext setView:[cocoaWindow contentView]];
+        }
 
-    // Assign contexts for use in window close sequence later on:
-    windowRecord->targetSpecific.nsmasterContext = (void*) masterContext;
-    windowRecord->targetSpecific.nsswapContext = (void*) glswapContext;
-    windowRecord->targetSpecific.nsuserContext = (void*) gluserContext;
-    
+        // Ditto for potential glswapcontext for async flips and frame sequential stereo:
+        if (windowRecord->targetSpecific.glswapcontextObject) {
+            glswapContext = [[NSOpenGLContext alloc] initWithCGLContextObj: windowRecord->targetSpecific.glswapcontextObject];
+            [glswapContext setValues:&opaque forParameter:NSOpenGLCPSurfaceOpacity];
+            [glswapContext setView:[cocoaWindow contentView]];
+        }
+
+        // Assign contexts for use in window close sequence later on:
+        windowRecord->targetSpecific.nsmasterContext = (void*) masterContext;
+        windowRecord->targetSpecific.nsswapContext = (void*) glswapContext;
+        windowRecord->targetSpecific.nsuserContext = (void*) gluserContext;
+    });
+
+    // Drain the pool:
+    [pool drain];
+
     // Assign final window globalRect (in units of points in gobal display space)
     // and final true backbuffer size 'rect' (in units of pixels):
     PsychCocoaGetWindowBounds(window, windowRecord->globalrect, windowRecord->rect);
-    
-    // Drain the pool:
-    [pool drain];
 
     // Return success:
     return(false);
@@ -432,7 +449,7 @@ void PsychCocoaSendBehind(void* window)
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
     // Move window behind all others:
-    [cocoaWindow orderBack:nil];
+    dispatch_sync(dispatch_get_main_queue(), ^{[cocoaWindow orderBack:nil];});
 
     // Drain the pool:
     [pool drain];
@@ -446,7 +463,7 @@ void PsychCocoaSetWindowLevel(void* window, int inLevel)
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
     // Set level of window:
-    [cocoaWindow setLevel:inLevel];
+    dispatch_sync(dispatch_get_main_queue(), ^{[cocoaWindow setLevel:inLevel];});
 
     // Drain the pool:
     [pool drain];
@@ -460,7 +477,7 @@ void PsychCocoaSetWindowAlpha(void* window, float inAlpha)
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
     // Set Window transparency:
-    [cocoaWindow setAlphaValue: inAlpha];
+    dispatch_sync(dispatch_get_main_queue(), ^{[cocoaWindow setAlphaValue: inAlpha];});
 
     // Drain the pool:
     [pool drain];
@@ -471,23 +488,25 @@ void PsychCocoaSetThemeCursor(int inCursor)
     // Allocate auto release pool:
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
-    switch(inCursor) {
-        case 0:
-            [[NSCursor arrowCursor] set];
-        break;
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        switch(inCursor) {
+            case 0:
+                [[NSCursor arrowCursor] set];
+            break;
 
-        case 4:
-            [[NSCursor IBeamCursor] set];
-        break;
+            case 4:
+                [[NSCursor IBeamCursor] set];
+            break;
 
-        case 5:
-            [[NSCursor crosshairCursor] set];
-        break;
+            case 5:
+                [[NSCursor crosshairCursor] set];
+            break;
 
-        case 10:
-            [[NSCursor pointingHandCursor] set];
-        break;
-    }
+            case 10:
+                [[NSCursor pointingHandCursor] set];
+            break;
+        }
+    });
 
     // Drain the pool:
     [pool drain];
