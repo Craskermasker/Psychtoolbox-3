@@ -39,6 +39,7 @@ PsychError PsychCocoaCreateWindow(PsychWindowRecordType *windowRecord, int windo
 {
     char windowTitle[100];
     __block NSWindow *cocoaWindow = NULL;
+    __block NSRect clientRect;
     PsychRectType screenRect;
     int screenHeight;
 
@@ -51,15 +52,18 @@ PsychError PsychCocoaCreateWindow(PsychWindowRecordType *windowRecord, int windo
     windowRecord->targetSpecific.nsswapContext = NULL;
     windowRecord->targetSpecific.nsuserContext = NULL;
 
-    // Include onscreen window index in title:
-    sprintf(windowTitle, "PTB Onscreen Window [%i]:", windowRecord->windowIndex);
-
     // Allocate auto release pool:
     NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
 
     // Initialize the Cocoa application object, connect to CoreGraphics-Server:
     // Can be called many times, as redundant calls are ignored.
-    NSApplicationLoad();
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        NSApplicationLoad();
+    });
+
+    // Include onscreen window index in title:
+    sprintf(windowTitle, "PTB Onscreen Window [%i]:", windowRecord->windowIndex);
+    NSString *winTitle = [NSString stringWithUTF8String:windowTitle];
 
     // Define size of client area - the actual stimulus display area:
     // The window itself will resize and reposition itself so that the size of
@@ -92,62 +96,65 @@ PsychError PsychCocoaCreateWindow(PsychWindowRecordType *windowRecord, int windo
         return(PsychError_system);
     }
 
-    [cocoaWindow setTitle:[NSString stringWithUTF8String:windowTitle]];
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        [cocoaWindow setTitle:winTitle];
 
-    if ((windowLevel >= 1000) && (windowLevel < 2000)) {
-        // Set window as non-opaque, with a transparent window background color:
-        // This together with the OpenGL context setup for transparency allows the OpenGL
-        // colorbuffer alpha-channel to determine window opacity at a per-pixel level, so
-        // experimental code has full control over transpareny if it wishes so. By default,
-        // Screen() clears the backbuffer to an opaque white with alpha 1.0, so by default
-        // windows do appear solid, unless usercode explicitely does something else:
-        [cocoaWindow setOpaque:false];
-        [cocoaWindow setBackgroundColor:[NSColor colorWithDeviceWhite:0.0 alpha:0.0]];
-    }
-    else {
-        [cocoaWindow setOpaque:true];
-        [cocoaWindow setBackgroundColor:[NSColor colorWithDeviceWhite:0.0 alpha:1.0]];
-    }
+        if ((windowLevel >= 1000) && (windowLevel < 2000)) {
+            // Set window as non-opaque, with a transparent window background color:
+            // This together with the OpenGL context setup for transparency allows the OpenGL
+            // colorbuffer alpha-channel to determine window opacity at a per-pixel level, so
+            // experimental code has full control over transpareny if it wishes so. By default,
+            // Screen() clears the backbuffer to an opaque white with alpha 1.0, so by default
+            // windows do appear solid, unless usercode explicitely does something else:
+            [cocoaWindow setOpaque:false];
+            [cocoaWindow setBackgroundColor:[NSColor colorWithDeviceWhite:0.0 alpha:0.0]];
+        }
+        else {
+            [cocoaWindow setOpaque:true];
+            [cocoaWindow setBackgroundColor:[NSColor colorWithDeviceWhite:0.0 alpha:1.0]];
+        }
 
-    // Make window "transparent" for mouse events like clicks and drags, if requested:
-    // For levels 1000 to 1499, where the window is a partially transparent
-    // overlay window with global alpha 0.0 - 1.0, we disable reception of mouse
-    // events. --> Can move and click to windows behind the window!
-    // A range 1500 to 1999 would also allow transparency, but block mouse events:
-    psych_bool ignoreMouse = ((windowLevel >= 1000) && (windowLevel < 1500)) ? TRUE : FALSE;
-    if (ignoreMouse) [cocoaWindow setIgnoresMouseEvents:true];
+        // Make window "transparent" for mouse events like clicks and drags, if requested:
+        // For levels 1000 to 1499, where the window is a partially transparent
+        // overlay window with global alpha 0.0 - 1.0, we disable reception of mouse
+        // events. --> Can move and click to windows behind the window!
+        // A range 1500 to 1999 would also allow transparency, but block mouse events:
+        psych_bool ignoreMouse = ((windowLevel >= 1000) && (windowLevel < 1500)) ? TRUE : FALSE;
+        if (ignoreMouse) [cocoaWindow setIgnoresMouseEvents:true];
 
-    // In non-GUI mode we want the window to be above all other regular windows, so the
-    // stimulus doesn't get occluded. If we make ourselves transparent to mouse clicks, we
-    // must be above all other windows, as otherwise any mouse-click that "goes through"
-    // to an underlying window will raise that window above ours and we get occluded, ie.,
-    // any actual passed-through mouse-click would defeat the purpose of pass-through mode:
-    if (!(windowRecord->specialflags & kPsychGUIWindow) || ignoreMouse) {
-        // Set level of window to be in front of every regular window:
-        [cocoaWindow setLevel:NSScreenSaverWindowLevel];
-    }
+        // In non-GUI mode we want the window to be above all other regular windows, so the
+        // stimulus doesn't get occluded. If we make ourselves transparent to mouse clicks, we
+        // must be above all other windows, as otherwise any mouse-click that "goes through"
+        // to an underlying window will raise that window above ours and we get occluded, ie.,
+        // any actual passed-through mouse-click would defeat the purpose of pass-through mode:
+        if (!(windowRecord->specialflags & kPsychGUIWindow) || ignoreMouse) {
+            // Set level of window to be in front of every regular window:
+            [cocoaWindow setLevel:NSScreenSaverWindowLevel];
+        }
 
-    // Disable auto-flushing of drawed content to frontbuffer:
-    [cocoaWindow disableFlushWindow];
+        // Disable auto-flushing of drawed content to frontbuffer:
+        [cocoaWindow disableFlushWindow];
 
-    // Position the window unless its position is left to the window manager:
-    if (!(windowRecord->specialflags & kPsychGUIWindowWMPositioned)) {
-        // Position the window. Origin is bottom-left of screen, as opposed to Carbon / PTB origin
-        // of top-left. Therefore need to invert the vertical position. Cocoa only takes our request
-        // as a hint. It tries to position as requested, but places the window differently if required
-        // to make sure the full windowRect content area is displayed. It doesn't allow the window to
-        // overlap the menu bar or dock area by default.
-        NSPoint winPosition = NSMakePoint(windowRecord->rect[kPsychLeft], screenHeight - windowRecord->rect[kPsychTop]);
-        [cocoaWindow setFrameTopLeftPoint:winPosition];
-    }
+        // Position the window unless its position is left to the window manager:
+        if (!(windowRecord->specialflags & kPsychGUIWindowWMPositioned)) {
+            // Position the window. Origin is bottom-left of screen, as opposed to Carbon / PTB origin
+            // of top-left. Therefore need to invert the vertical position. Cocoa only takes our request
+            // as a hint. It tries to position as requested, but places the window differently if required
+            // to make sure the full windowRect content area is displayed. It doesn't allow the window to
+            // overlap the menu bar or dock area by default.
+            NSPoint winPosition = NSMakePoint(windowRecord->rect[kPsychLeft], screenHeight - windowRecord->rect[kPsychTop]);
+            [cocoaWindow setFrameTopLeftPoint:winPosition];
+        }
 
-    // Query and translate content rect of final window to a PTB rect for use as the windows globalRect
-    // in global screen space coordinates (unit is points, not pixels - important for Retina/HiDPI):
-    NSRect clientRect = [cocoaWindow contentRectForFrameRect:[cocoaWindow frame]];
+        // Query and translate content rect of final window to a PTB rect for use as the windows globalRect
+        // in global screen space coordinates (unit is points, not pixels - important for Retina/HiDPI):
+        clientRect = [cocoaWindow contentRectForFrameRect:[cocoaWindow frame]];
+
+        // Tell Cocoa/NSOpenGL to render to Retina displays at native resolution:
+        [[cocoaWindow contentView] setWantsBestResolutionOpenGLSurface:YES];
+    });
+
     PsychMakeRect(windowRecord->globalrect, clientRect.origin.x, screenRect[kPsychBottom] - (clientRect.origin.y + clientRect.size.height), clientRect.origin.x + clientRect.size.width, screenRect[kPsychBottom] - clientRect.origin.y);
-
-    // Tell Cocoa/NSOpenGL to render to Retina displays at native resolution:
-    [[cocoaWindow contentView] setWantsBestResolutionOpenGLSurface:YES];
 
     // Drain the pool:
     [pool drain];
