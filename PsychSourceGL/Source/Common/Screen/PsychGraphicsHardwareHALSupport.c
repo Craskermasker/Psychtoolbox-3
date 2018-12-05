@@ -660,17 +660,32 @@ psych_bool PsychGetCurrentGPUSurfaceAddresses(PsychWindowRecordType* windowRecor
         }
 
         if (gpuMaintype == kPsychIntelIGP) {
-            // Intel IGP: Get primarySurface address from plane base address live register, ie. the true current value:
+            // Intel IGP:
+
+            // No secondary surface atm., but (ab)use to store the latched next requested surface address for reg doublebuffering:
+            *secondarySurface = (psych_uint64) PsychOSKDReadRegister(screenId, 0x7019C + (headid * 0x1000), NULL);;
+
+            // Get primarySurface address from plane base address live register, ie. the true current value from last completed flip:
             *primarySurface = (psych_uint64) PsychOSKDReadRegister(screenId, 0x701AC + (headid * 0x1000), NULL);
-            // No secondary surface atm.:
-            *secondarySurface = 0;
-            // As we read the live address register, we get whatever the current true value is, so update is never pending
-            // wrt. to our returned values:
-            *updatePending = FALSE;
+
+            // primarySurface encodes current scanout buffer address - live, whereas secondarySurface encodes pre-doublebuffered
+            // address for a flip. If both are identical then no flip is pending. If they differ then obviously the wanted
+            // address has not yet been latched into the live register and a pageflip is programmed/pending but not yet
+            // completed - iow. updatePending:
+            *updatePending = *primarySurface != *secondarySurface;
+            updateStatus = -1;
         }
 
         if (PsychPrefStateGet_Verbosity() > 14) {
-            printf("PTB-DEBUG: Screen %i: Head %i: primarySurface=%p : secondarySurface=%p : updateStatus=%i\n", screenId, PsychScreenToCrtcId(screenId, 0), *primarySurface, *secondarySurface, updateStatus);
+            double tNow;
+            PsychGetAdjustedPrecisionTimerSeconds(&tNow);
+
+            if (gpuMaintype == kPsychIntelIGP)
+                printf("PTB-DEBUG: %6lf : Screen %i: Head %i: currentSurface=%p <-- requestedSurface=%p : updatePending=%i\n",
+                       tNow, screenId, PsychScreenToCrtcId(screenId, 0), *primarySurface, *secondarySurface, (int) *updatePending);
+            else
+                printf("PTB-DEBUG: %6lf : Screen %i: Head %i: primarySurface=%p : secondarySurface=%p : updateStatus=%i\n",
+                       tNow, screenId, PsychScreenToCrtcId(screenId, 0), *primarySurface, *secondarySurface, updateStatus);
         }
 
         // Success:
