@@ -626,13 +626,14 @@ psych_bool PsychGetCurrentGPUSurfaceAddresses(PsychWindowRecordType* windowRecor
         // Just need to check if GPU low-level access is supported:
         if (!PsychOSIsKernelDriverAvailable(screenId)) return(FALSE);
 
-        // We only support AMD Radeon/Fire GPU's, nothing else:
-        if (!PsychGetGPUSpecs(screenId, &gpuMaintype, &gpuMinortype, NULL, &fNumDisplayHeads) || (gpuMaintype != kPsychRadeon)) {
+        // We only support AMD Radeon/Fire GPU's and Intel IGPs, nothing else:
+        if (!PsychGetGPUSpecs(screenId, &gpuMaintype, &gpuMinortype, NULL, &fNumDisplayHeads) ||
+            (gpuMaintype != kPsychRadeon && gpuMaintype != kPsychIntelIGP)) {
             return(FALSE);
         }
 
         // Driver is online: Read the registers, but only for primary crtc in a multi-crtc config:
-        if  (gpuMinortype < 40) {
+        if  ((gpuMaintype == kPsychRadeon) && (gpuMinortype < 40)) {
             // Pre DCE-4: AVIVO class display hardware:
             *primarySurface = (psych_uint64) PsychOSKDReadRegister(screenId, (PsychScreenToCrtcId(screenId, 0) < 1) ? RADEON_D1GRPH_PRIMARY_SURFACE_ADDRESS : RADEON_D2GRPH_PRIMARY_SURFACE_ADDRESS, NULL);
             *secondarySurface = (psych_uint64) PsychOSKDReadRegister(screenId, (PsychScreenToCrtcId(screenId, 0) < 1) ? RADEON_D1GRPH_SECONDARY_SURFACE_ADDRESS : RADEON_D2GRPH_SECONDARY_SURFACE_ADDRESS, NULL);
@@ -641,7 +642,7 @@ psych_bool PsychGetCurrentGPUSurfaceAddresses(PsychWindowRecordType* windowRecor
             *updatePending = (updateStatus & RADEON_SURFACE_UPDATE_PENDING) ? TRUE : FALSE;
         }
 
-        if  (gpuMinortype >= 40) {
+        if  ((gpuMaintype == kPsychRadeon) && (gpuMinortype >= 40)) {
             // DCE-4 or later display hardware:
             if (headid < 0 || headid > fNumDisplayHeads - 1) {
                 if (PsychPrefStateGet_Verbosity() > 1) printf("PTB-WARNING: PsychGetCurrentGPUSurfaceAddresses(): Invalid headId %i (greater than max %i) provided for DCE-4+ display engine!\n", headid, fNumDisplayHeads - 1);
@@ -656,6 +657,16 @@ psych_bool PsychGetCurrentGPUSurfaceAddresses(PsychWindowRecordType* windowRecor
             updateStatus =      PsychOSKDReadRegister(screenId, EVERGREEN_GRPH_UPDATE + crtcoff[headid], NULL);
 
             *updatePending = (updateStatus & EVERGREEN_GRPH_SURFACE_UPDATE_PENDING) ? TRUE : FALSE;
+        }
+
+        if (gpuMaintype == kPsychIntelIGP) {
+            // Intel IGP: Get primarySurface address from plane base address live register, ie. the true current value:
+            *primarySurface = (psych_uint64) PsychOSKDReadRegister(screenId, 0x701AC + (headid * 0x1000), NULL);
+            // No secondary surface atm.:
+            *secondarySurface = 0;
+            // As we read the live address register, we get whatever the current true value is, so update is never pending
+            // wrt. to our returned values:
+            *updatePending = FALSE;
         }
 
         if (PsychPrefStateGet_Verbosity() > 14) {
