@@ -3526,7 +3526,7 @@ double PsychFlipWindowBuffers(PsychWindowRecordType *windowRecord, int multiflip
     // extensions:
 
     // Don't use absolute vbl or (divisor,remainder) constraint by default:
-    targetSwapFlags = 0;
+    targetSwapFlags = 4;
 
     // Swap at a specific video field (even or odd) requested, e.g., to select the target field
     // in a frame-sequential stereo presentations setup and thereby the specific eye for stimulus
